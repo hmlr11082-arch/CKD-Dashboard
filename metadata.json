@@ -1,0 +1,6 @@
+{
+  "name": "Dashboard การส่งเบิกค่าฟอกไต",
+  "description": "ระบบติดตามและวิเคราะห์ข้อมูลการส่งเบิกค่าฟอกไต (UC, COCD, SOCD) แบบ Real-time เชื่อมต่อ Google Sheets โดยตรงพร้อมระบบตรวจสอบความถูกต้องของข้อมูลอัตโนมัติ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

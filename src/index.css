@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Prompt', 'Noto Sans Thai', sans-serif;
+    --font-sans: 'Noto Sans Thai', 'Prompt', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Prompt', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #F4F8FF;
+    color: #0F2A6B;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-sans-thai {
+  font-family: var(--font-sans);
+}
+
+.font-mono-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Highlight animation when a number updates in real-time */
+@keyframes numberFlash {
+  0% {
+    background-color: rgba(56, 189, 248, 0.35);
+    transform: scale(1.02);
+  }
+  100% {
+    background-color: transparent;
+    transform: scale(1);
+  }
+}
+
+.animate-number-flash {
+  animation: numberFlash 1.2s cubic-bezier(0.16, 1, 0.3, 1);
+  border-radius: 6px;
+}
+
+/* Safe area support for mobile Bottom Navigation */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Custom thin scrollbars for horizontal charts and tables */
+.custom-scrollbar::-webkit-scrollbar {
+  height: 6px;
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(224, 242, 254, 0.4);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.35);
+  border-radius: 9999px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(29, 78, 216, 0.6);
+}
