@@ -1,8 +1,12 @@
 import {
   ActiveFetcherTier,
+  BillMonthlySummary,
+  BillRecord,
+  BillRemarkSummary,
   DataQualityIssue,
   DataQualityReport,
   MonthlyRecord,
+  ParsedBillSheetData,
   ParsedSheetData,
   PeriodRecord,
   SheetSummaryRow,
@@ -186,7 +190,7 @@ export function computeDataHash(input: string): string {
 }
 
 /**
- * Parse 2D array of rows into structured, validated ParsedSheetData
+ * Parse 2D array of rows into structured, validated ParsedSheetData (for ฟอกไต 2570 / 2569 / 2568)
  */
 export function parseSheetRows(
   rows: string[][],
@@ -219,13 +223,18 @@ export function parseSheetRows(
 
   const headerRow = rows[headerRowIndex].map((c) => (c || '').trim());
 
-  // Validate Table 1 (Columns A-G) and Table 2 (Columns I-M) headers
+  // Validate Table 1 (Columns A-G) and dynamically locate Table 2 ("เดือน" at Col I or Col J)
   const colAHeader = headerRow[0] || '';
   const colDHeader = headerRow[3] || '';
   const colGHeader = headerRow[6] || '';
-  const colIHeader = headerRow[8] || '';
-  const colJHeader = headerRow[9] || '';
-  const colKHeader = headerRow[10] || '';
+
+  const monthColIndex = headerRow.findIndex((h) => h.includes('เดือน'));
+  const socdColIndex = monthColIndex !== -1 ? monthColIndex + 1 : 9;
+  const cocdColIndex = monthColIndex !== -1 ? monthColIndex + 2 : 10;
+
+  const colIHeader = monthColIndex !== -1 ? headerRow[monthColIndex] : headerRow[8] || '';
+  const colJHeader = headerRow[socdColIndex] || '';
+  const colKHeader = headerRow[cocdColIndex] || '';
 
   const isTable1Valid =
     colAHeader.includes('COCD') &&
@@ -233,23 +242,26 @@ export function parseSheetRows(
     colGHeader.includes('รวม');
 
   const isTable2Valid =
-    colIHeader.includes('เดือน') &&
+    monthColIndex !== -1 &&
     colJHeader.includes('SOCD') &&
     colKHeader.includes('COCD');
 
   if (!isTable1Valid || !isTable2Valid) {
     return createInvalidStructureData(
       options,
-      `โครงสร้าง Sheet เปลี่ยนไป: หัวตารางไม่ตรงตามรูปแบบที่กำหนด (พบคอลัมน์ A="${colAHeader}", D="${colDHeader}", I="${colIHeader}")`
+      `โครงสร้าง Sheet เปลี่ยนไป: หัวตารางไม่ตรงตามรูปแบบที่กำหนด (พบคอลัมน์ A="${colAHeader}", D="${colDHeader}", เดือน="${colIHeader}")`
     );
   }
 
-  // Detect whether Table 2 has UC column at index 11 (L) or if index 11 is "รวม" (like in ฟอกไต 2568)
-  const colLHeader = headerRow[11] || '';
-  const colMHeader = headerRow[12] || '';
-  const hasUcColumn = colLHeader.toUpperCase().includes('UC');
-  const ucColIndex = hasUcColumn ? 11 : -1;
-  const monthlyTotalColIndex = hasUcColumn ? 12 : colLHeader.includes('รวม') ? 11 : 12;
+  // Detect whether Table 2 has UC column at monthColIndex + 3 or if monthColIndex + 3 is "รวม" (like in ฟอกไต 2568)
+  const afterCocdHeader = headerRow[monthColIndex + 3] || '';
+  const hasUcColumn = afterCocdHeader.toUpperCase().includes('UC');
+  const ucColIndex = hasUcColumn ? monthColIndex + 3 : -1;
+  const monthlyTotalColIndex = hasUcColumn
+    ? monthColIndex + 4
+    : afterCocdHeader.includes('รวม')
+    ? monthColIndex + 3
+    : monthColIndex + 4;
 
   const rawPeriods: PeriodRecord[] = [];
   const rawMonths: MonthlyRecord[] = [];
@@ -296,11 +308,13 @@ export function parseSheetRows(
           socdPatients !== null &&
           cocdAmount !== null &&
           socdAmount !== null &&
+          cocdPatients > 0 &&
           cocdPatients === socdPatients &&
           Math.abs(cocdAmount - socdAmount) < 0.01;
 
         const hasRowSumMismatch =
           sheetTotalAmount !== null &&
+          (cocdAmount !== null || socdAmount !== null) &&
           Math.abs(sheetTotalAmount - calculatedTotalAmount) > 0.5;
 
         rawPeriods.push({
@@ -336,11 +350,11 @@ export function parseSheetRows(
       }
     }
 
-    // --- Parse Table 2 (Columns I-M: index 8..12) ---
-    const monthLabelRaw = (row[8] || '').trim();
+    // --- Parse Table 2 (Monthly Summary starting at monthColIndex) ---
+    const monthLabelRaw = (row[monthColIndex] || '').trim();
     if (monthLabelRaw) {
-      const socdVal = cleanNumber(row[9]);
-      const cocdVal = cleanNumber(row[10]);
+      const socdVal = cleanNumber(row[socdColIndex]);
+      const cocdVal = cleanNumber(row[cocdColIndex]);
       const ucVal = ucColIndex !== -1 ? cleanNumber(row[ucColIndex]) : null;
       const totalVal = cleanNumber(row[monthlyTotalColIndex]);
 
@@ -368,12 +382,15 @@ export function parseSheetRows(
         const calculatedTotalAmount =
           (socdVal ?? 0) + (cocdVal ?? 0) + (ucVal ?? 0);
 
-        const isUcMissing = hasUcColumn && ucVal === null;
+        // Only mark UC as missing if the month already has SOCD or COCD data recorded
+        const hasAnySchemeData = socdVal !== null || cocdVal !== null;
+        const isUcMissing = hasUcColumn && hasAnySchemeData && ucVal === null;
         const isIncomplete =
-          isUcMissing || socdVal === null || cocdVal === null;
+          isUcMissing || (hasAnySchemeData && (socdVal === null || cocdVal === null));
 
         const hasMonthlySumMismatch =
           totalVal !== null &&
+          hasAnySchemeData &&
           Math.abs(totalVal - calculatedTotalAmount) > 0.5;
 
         rawMonths.push({
@@ -517,7 +534,7 @@ export function parseSheetRows(
         category: 'CROSS_TABLE',
         severity: 'error',
         title: `ยอดรวม 2 งวด COCD เดือน${m.monthNameThai} ไม่ตรงกับตารางสรุปรายเดือน`,
-        description: `ผลรวมรายงวด COCD ในตารางที่ 1 ได้ ${formatCurrencyTHB(pCocdSum, true)} แต่ตารางที่ 2 (คอลัมน์ K) ระบุ ${formatCurrencyTHB(m.cocdAmount, true)}`,
+        description: `ผลรวมรายงวด COCD ในตารางที่ 1 ได้ ${formatCurrencyTHB(pCocdSum, true)} แต่ตารางที่ 2 ระบุ ${formatCurrencyTHB(m.cocdAmount, true)}`,
         periodOrMonth: m.monthNameThai,
         expectedValue: formatCurrencyTHB(pCocdSum, true),
         actualValue: formatCurrencyTHB(m.cocdAmount, true),
@@ -531,7 +548,7 @@ export function parseSheetRows(
         category: 'CROSS_TABLE',
         severity: 'error',
         title: `ยอดรวม 2 งวด SOCD เดือน${m.monthNameThai} ไม่ตรงกับตารางสรุปรายเดือน`,
-        description: `ผลรวมรายงวด SOCD ในตารางที่ 1 ได้ ${formatCurrencyTHB(pSocdSum, true)} แต่ตารางที่ 2 (คอลัมน์ J) ระบุ ${formatCurrencyTHB(m.socdAmount, true)}`,
+        description: `ผลรวมรายงวด SOCD ในตารางที่ 1 ได้ ${formatCurrencyTHB(pSocdSum, true)} แต่ตารางที่ 2 ระบุ ${formatCurrencyTHB(m.socdAmount, true)}`,
         periodOrMonth: m.monthNameThai,
         expectedValue: formatCurrencyTHB(pSocdSum, true),
         actualValue: formatCurrencyTHB(m.socdAmount, true),
@@ -590,7 +607,6 @@ export function parseSheetRows(
   const currShort = String(fyBE).slice(-2);
   const fiscalYearLabel = `ปีงบประมาณ ${fyBE} (ต.ค. ${prevShort} – ก.ย. ${currShort})`;
 
-  // Deterministic hash of parsed values so polling detects any cell edit, row addition, or deletion
   const hashPayload = JSON.stringify({
     sheetName: options.sheetName,
     periods: periods.map((p) => [
@@ -648,6 +664,287 @@ export function parseSheetRows(
     qualityReport,
     dataHash,
     fetchedAt,
+    activeTier: options.activeTier,
+  };
+}
+
+/**
+ * Parse "Bill ฟอกไต ..." sheet rows into structured ParsedBillSheetData
+ */
+export function parseBillSheetRows(
+  rows: string[][],
+  options: {
+    spreadsheetId: string;
+    sheetName: string;
+    activeTier: ActiveFetcherTier;
+  }
+): ParsedBillSheetData {
+  const fetchedAt = new Date().toISOString();
+  const yearMatch = options.sheetName.match(/(\d{4})/);
+  const fyBE = yearMatch ? parseInt(yearMatch[1], 10) : 2569;
+  const prevShort = String(fyBE - 1).slice(-2);
+  const currShort = String(fyBE).slice(-2);
+  const fiscalYearLabel = `Bill ฟอกไต ปีงบประมาณ ${fyBE} (ต.ค. ${prevShort} – ก.ย. ${currShort})`;
+
+  if (!rows || rows.length === 0) {
+    return createInvalidBillData(options, fiscalYearLabel, 'ไม่พบข้อมูลในตาราง Bill');
+  }
+
+  // Find header row containing "ลำดับ" or "งวด" or "OFC"
+  const headerIdx = rows.findIndex((r) =>
+    r.some((c) => c && (c.includes('ลำดับ') || c.includes('งวด') || c.includes('OFC')))
+  );
+
+  if (headerIdx === -1) {
+    return createInvalidBillData(
+      options,
+      fiscalYearLabel,
+      'โครงสร้างตาราง Bill เปลี่ยนไป: ไม่พบคอลัมน์ ลำดับ / ว/ด/ป / งวด / OFC / SSS'
+    );
+  }
+
+  const records: BillRecord[] = [];
+
+  for (let rIdx = headerIdx + 1; rIdx < rows.length; rIdx++) {
+    const row = rows[rIdx];
+    if (!row || row.length === 0) continue;
+
+    const seqRaw = (row[0] || '').trim();
+    const dateRaw = (row[1] || '').trim();
+    const billCode = (row[2] || '').trim();
+
+    // Skip sub-header row if row 1 has "ส่ง", "ผ่าน", "ไม่ผ่าน"
+    if (
+      seqRaw.includes('ลำดับ') ||
+      billCode.includes('งวด') ||
+      (row[3] || '').includes('ส่ง') ||
+      (row[4] || '').includes('ผ่าน')
+    ) {
+      continue;
+    }
+
+    // Skip completely blank footer rows
+    if (!seqRaw && !dateRaw && !billCode) {
+      continue;
+    }
+
+    const seqNo = cleanNumber(seqRaw);
+    const ofcSent = cleanNumber(row[3]);
+    const ofcPassed = cleanNumber(row[4]);
+    const ofcFailed = cleanNumber(row[5]);
+    const sssSent = cleanNumber(row[6]);
+    const sssPassed = cleanNumber(row[7]);
+    const sssFailed = cleanNumber(row[8]);
+    const sheetTotal = cleanNumber(row[9]);
+    const remark = (row[10] || '').trim();
+
+    const isSubmitted =
+      ofcSent !== null ||
+      sssSent !== null ||
+      ofcPassed !== null ||
+      sssPassed !== null ||
+      dateRaw.length > 0;
+
+    const calculatedSentTotal = (ofcSent ?? 0) + (sssSent ?? 0);
+    const calculatedPassedTotal = (ofcPassed ?? 0) + (sssPassed ?? 0);
+    const calculatedFailedTotal = (ofcFailed ?? 0) + (sssFailed ?? 0);
+    const hasFailedItems = calculatedFailedTotal > 0 || remark.length > 0;
+
+    // Parse month from dateRaw (e.g. "01/10/2568" or "1/5/2567")
+    let monthKey = 'ไม่ระบุเดือน';
+    let monthLabelThai = 'ไม่ระบุเดือน';
+    const dateParts = dateRaw.split('/');
+    if (dateParts.length === 3) {
+      const mNum = parseInt(dateParts[1], 10);
+      const yRaw = parseInt(dateParts[2], 10);
+      const yBE = yRaw < 2400 ? yRaw + 543 : yRaw;
+      const mMeta = FISCAL_MONTHS.find((fm) => fm.monthNum === mNum);
+      if (mMeta && Number.isFinite(yBE)) {
+        monthKey = `${yBE}-${String(mNum).padStart(2, '0')}`;
+        monthLabelThai = `${mMeta.shortThai} ${String(yBE).slice(-2)}`;
+      }
+    }
+
+    records.push({
+      id: billCode || `row-${rIdx + 1}`,
+      rowNumber: rIdx + 1,
+      seqNo,
+      dateRaw,
+      monthKey,
+      monthLabelThai,
+      billCode: billCode || `แถวที่ ${rIdx + 1}`,
+      ofcSent,
+      ofcPassed,
+      ofcFailed,
+      sssSent,
+      sssPassed,
+      sssFailed,
+      sheetTotal,
+      calculatedSentTotal,
+      calculatedPassedTotal,
+      calculatedFailedTotal,
+      remark,
+      isSubmitted,
+      hasFailedItems,
+    });
+  }
+
+  const submittedRecords = records.filter((r) => r.isSubmitted);
+  const pendingBatchesCount = records.length - submittedRecords.length;
+
+  // Monthly aggregation
+  const monthMap = new Map<string, BillMonthlySummary>();
+  for (const r of submittedRecords) {
+    const existing = monthMap.get(r.monthKey) || {
+      monthKey: r.monthKey,
+      monthLabelThai: r.monthLabelThai,
+      batchesCount: 0,
+      ofcSent: 0,
+      ofcPassed: 0,
+      ofcFailed: 0,
+      sssSent: 0,
+      sssPassed: 0,
+      sssFailed: 0,
+      totalSent: 0,
+      totalPassed: 0,
+      totalFailed: 0,
+    };
+
+    existing.batchesCount += 1;
+    existing.ofcSent += r.ofcSent ?? 0;
+    existing.ofcPassed += r.ofcPassed ?? 0;
+    existing.ofcFailed += r.ofcFailed ?? 0;
+    existing.sssSent += r.sssSent ?? 0;
+    existing.sssPassed += r.sssPassed ?? 0;
+    existing.sssFailed += r.sssFailed ?? 0;
+    existing.totalSent += r.calculatedSentTotal;
+    existing.totalPassed += r.calculatedPassedTotal;
+    existing.totalFailed += r.calculatedFailedTotal;
+
+    monthMap.set(r.monthKey, existing);
+  }
+
+  const monthlySummaries = Array.from(monthMap.values());
+
+  // Remark / Error Code aggregation
+  const remarkMap = new Map<string, BillRemarkSummary>();
+  for (const r of submittedRecords) {
+    if (!r.remark) continue;
+    const codeMatch = r.remark.match(/^([A-Za-z0-9]+)\s*:\s*([^0-9\n]+)/);
+    const code = codeMatch ? codeMatch[1].trim().toUpperCase() : 'อื่นๆ';
+    const desc = codeMatch
+      ? `${code} : ${codeMatch[2].trim().replace(/\s+HN.*$/i, '').trim()}`
+      : r.remark.slice(0, 60);
+
+    const existing = remarkMap.get(code) || {
+      code,
+      fullText: desc,
+      count: 0,
+    };
+    existing.count += 1;
+    remarkMap.set(code, existing);
+  }
+
+  const remarkSummaries = Array.from(remarkMap.values()).sort(
+    (a, b) => b.count - a.count
+  );
+
+  // Grand Totals
+  const ofcSent = submittedRecords.reduce((a, r) => a + (r.ofcSent ?? 0), 0);
+  const ofcPassed = submittedRecords.reduce((a, r) => a + (r.ofcPassed ?? 0), 0);
+  const ofcFailed = submittedRecords.reduce((a, r) => a + (r.ofcFailed ?? 0), 0);
+  const sssSent = submittedRecords.reduce((a, r) => a + (r.sssSent ?? 0), 0);
+  const sssPassed = submittedRecords.reduce((a, r) => a + (r.sssPassed ?? 0), 0);
+  const sssFailed = submittedRecords.reduce((a, r) => a + (r.sssFailed ?? 0), 0);
+
+  const totalSent = ofcSent + sssSent;
+  const totalPassed = ofcPassed + sssPassed;
+  const totalFailed = ofcFailed + sssFailed;
+
+  const overallPassRatePct = totalSent > 0 ? (totalPassed / totalSent) * 100 : 100;
+  const ofcPassRatePct = ofcSent > 0 ? (ofcPassed / ofcSent) * 100 : 100;
+  const sssPassRatePct = sssSent > 0 ? (sssPassed / sssSent) * 100 : 100;
+
+  const dataHash = computeDataHash(
+    JSON.stringify({
+      sheetName: options.sheetName,
+      submittedCount: submittedRecords.length,
+      totalSent,
+      totalPassed,
+      totalFailed,
+      lastCode: submittedRecords[submittedRecords.length - 1]?.billCode,
+    })
+  );
+
+  return {
+    spreadsheetId: options.spreadsheetId,
+    sheetName: options.sheetName,
+    fiscalYearLabel,
+    isStructureValid: true,
+    structureErrorMessage: null,
+    records,
+    submittedRecords,
+    monthlySummaries,
+    remarkSummaries,
+    totals: {
+      submittedBatchesCount: submittedRecords.length,
+      pendingBatchesCount,
+      ofcSent,
+      ofcPassed,
+      ofcFailed,
+      sssSent,
+      sssPassed,
+      sssFailed,
+      totalSent,
+      totalPassed,
+      totalFailed,
+      overallPassRatePct,
+      ofcPassRatePct,
+      sssPassRatePct,
+    },
+    dataHash,
+    fetchedAt,
+    activeTier: options.activeTier,
+  };
+}
+
+function createInvalidBillData(
+  options: {
+    spreadsheetId: string;
+    sheetName: string;
+    activeTier: ActiveFetcherTier;
+  },
+  fiscalYearLabel: string,
+  errorMessage: string
+): ParsedBillSheetData {
+  return {
+    spreadsheetId: options.spreadsheetId,
+    sheetName: options.sheetName,
+    fiscalYearLabel,
+    isStructureValid: false,
+    structureErrorMessage: errorMessage,
+    records: [],
+    submittedRecords: [],
+    monthlySummaries: [],
+    remarkSummaries: [],
+    totals: {
+      submittedBatchesCount: 0,
+      pendingBatchesCount: 0,
+      ofcSent: 0,
+      ofcPassed: 0,
+      ofcFailed: 0,
+      sssSent: 0,
+      sssPassed: 0,
+      sssFailed: 0,
+      totalSent: 0,
+      totalPassed: 0,
+      totalFailed: 0,
+      overallPassRatePct: 0,
+      ofcPassRatePct: 0,
+      sssPassRatePct: 0,
+    },
+    dataHash: 'invalid-bill',
+    fetchedAt: new Date().toISOString(),
     activeTier: options.activeTier,
   };
 }

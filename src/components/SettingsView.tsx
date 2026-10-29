@@ -7,9 +7,10 @@ import {
   Laptop,
   Loader2,
   Play,
+  Receipt,
+  RefreshCw,
   RotateCcw,
   Save,
-  Settings,
   Smartphone,
   XCircle,
 } from 'lucide-react';
@@ -22,12 +23,17 @@ import {
 import {
   AppSettings,
   FetcherTierMode,
+  SheetTabInfo,
   ViewLayoutMode,
 } from '../types/claims';
 import { formatCurrencyTHB } from '../utils/csvParser';
 
 interface SettingsViewProps {
   settings: AppSettings;
+  claimsTabs: SheetTabInfo[];
+  billTabs: SheetTabInfo[];
+  isDiscoveringTabs: boolean;
+  onRediscoverTabs: () => void;
   onUpdateSettings: (newSettings: AppSettings) => void;
   onResetSettings: () => void;
   onOpenAboutModal: () => void;
@@ -35,6 +41,10 @@ interface SettingsViewProps {
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   settings,
+  claimsTabs,
+  billTabs,
+  isDiscoveringTabs,
+  onRediscoverTabs,
   onUpdateSettings,
   onResetSettings,
   onOpenAboutModal,
@@ -90,7 +100,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               โรงพยาบาลท่าคันโท 11085 · ตั้งค่าระบบและการเชื่อมต่อ
             </h2>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              กำหนดปีงบประมาณ ความถี่อัปเดต Real-time และตัวดึงข้อมูลสำรอง (ไม่ต้องใช้ API Key / OAuth)
+              กำหนดปีงบประมาณ ตรวจหาแผ่นงานใหม่อัตโนมัติ และตั้งค่าตัวดึงข้อมูลสำรอง
             </p>
           </div>
         </div>
@@ -107,56 +117,117 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       <form onSubmit={handleSave} className="space-y-6 text-xs sm:text-sm">
-        {/* 1. Fiscal Year & Polling Interval */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-4 rounded-2xl bg-[#F4F8FF]/70 dark:bg-slate-800/60 border border-blue-100 dark:border-slate-700 space-y-2.5">
-            <label className="font-display font-bold text-[#0F2A6B] dark:text-white flex items-center gap-1.5">
-              <Database className="w-4 h-4 text-[#1D4ED8] dark:text-[#38BDF8]" />
-              เลือกปีงบประมาณ (แท็บใน Google Sheet)
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                {
-                  tab: 'ฟอกไต 2569',
-                  sub: 'ต.ค. 68 – ก.ย. 69 (ค่าเริ่มต้น)',
-                },
-                {
-                  tab: 'ฟอกไต 2568',
-                  sub: 'ต.ค. 67 – ก.ย. 68',
-                },
-              ].map((item) => {
-                const active = draft.sheetName === item.tab;
-                return (
-                  <button
-                    key={item.tab}
-                    type="button"
-                    onClick={() => {
-                      const updated = { ...draft, sheetName: item.tab };
-                      setDraft(updated);
-                      onUpdateSettings(updated);
-                    }}
-                    className={`min-h-[54px] p-2.5 rounded-xl text-left border transition-all ${
-                      active
-                        ? 'bg-[#1D4ED8] text-white border-[#1D4ED8] shadow-xs'
-                        : 'bg-white dark:bg-slate-900 text-[#0F2A6B] dark:text-slate-200 border-blue-100 dark:border-slate-700 hover:border-blue-300'
-                    }`}
-                  >
-                    <div className="font-display font-bold text-xs sm:text-sm">
-                      {item.tab}
-                    </div>
-                    <div
-                      className={`text-[11px] ${
-                        active ? 'text-blue-100' : 'text-slate-500'
-                      }`}
-                    >
-                      {item.sub}
-                    </div>
-                  </button>
-                );
-              })}
+        {/* 1. Dynamic Sheet Discovery & Selection */}
+        <div className="p-4 rounded-2xl bg-[#F4F8FF]/70 dark:bg-slate-800/60 border border-blue-100 dark:border-slate-700 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="font-display font-bold text-[#0F2A6B] dark:text-white flex items-center gap-1.5">
+                <Database className="w-4 h-4 text-[#1D4ED8] dark:text-[#38BDF8]" />
+                แผ่นงานที่ตรวจพบใน Google Sheet อัตโนมัติ ({claimsTabs.length + billTabs.length} แผ่นงาน)
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                เมื่อเพิ่มแผ่นงานใหม่ใน Google Sheet (เช่น ฟอกไต 2570 หรือ Bill ฟอกไต 2570) ระบบจะดึงรายชื่อแผ่นงานเข้าสู่ระบบให้อัตโนมัติ
+              </p>
             </div>
+            <button
+              type="button"
+              onClick={onRediscoverTabs}
+              disabled={isDiscoveringTabs}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#1D4ED8] hover:bg-[#1E40AF] text-white text-xs font-medium flex items-center gap-1.5 shrink-0"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${
+                  isDiscoveringTabs ? 'animate-spin' : ''
+                }`}
+              />
+              <span>ซิงค์รายชื่อแผ่นงานเดี๋ยวนี้</span>
+            </button>
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+            {/* Claims Tabs */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[#0F2A6B] dark:text-slate-200 block">
+                แผ่นงานการส่งเบิกค่าฟอกไต ({claimsTabs.length} แผ่นงาน):
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {claimsTabs.map((item) => {
+                  const active = draft.sheetName === item.name;
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      onClick={() => {
+                        const updated = { ...draft, sheetName: item.name };
+                        setDraft(updated);
+                        onUpdateSettings(updated);
+                      }}
+                      className={`min-h-[46px] p-2 rounded-xl text-left border transition-all ${
+                        active
+                          ? 'bg-[#1D4ED8] text-white border-[#1D4ED8] shadow-xs'
+                          : 'bg-white dark:bg-slate-900 text-[#0F2A6B] dark:text-slate-200 border-blue-100 dark:border-slate-700 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="font-display font-bold text-xs truncate">
+                        {item.name}
+                      </div>
+                      <div
+                        className={`text-[10px] ${
+                          active ? 'text-blue-100' : 'text-slate-500'
+                        }`}
+                      >
+                        {item.shortLabel}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Bill Tabs */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-[#0F2A6B] dark:text-slate-200 flex items-center gap-1.5">
+                <Receipt className="w-3.5 h-3.5 text-[#0284C7]" />
+                <span>แผ่นงาน Bill ฟอกไต ({billTabs.length} แผ่นงาน):</span>
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {billTabs.map((item) => {
+                  const active = draft.billSheetName === item.name;
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      onClick={() => {
+                        const updated = { ...draft, billSheetName: item.name };
+                        setDraft(updated);
+                        onUpdateSettings(updated);
+                      }}
+                      className={`min-h-[46px] p-2 rounded-xl text-left border transition-all ${
+                        active
+                          ? 'bg-[#0284C7] text-white border-[#0284C7] shadow-xs'
+                          : 'bg-white dark:bg-slate-900 text-[#0F2A6B] dark:text-slate-200 border-blue-100 dark:border-slate-700 hover:border-sky-300'
+                      }`}
+                    >
+                      <div className="font-display font-bold text-xs truncate">
+                        {item.name}
+                      </div>
+                      <div
+                        className={`text-[10px] ${
+                          active ? 'text-sky-100' : 'text-slate-500'
+                        }`}
+                      >
+                        {item.shortLabel}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Polling Interval & View Layout Mode */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-4 rounded-2xl bg-[#F4F8FF]/70 dark:bg-slate-800/60 border border-blue-100 dark:border-slate-700 space-y-2.5">
             <label className="font-display font-bold text-[#0F2A6B] dark:text-white flex items-center gap-1.5">
               <Clock className="w-4 h-4 text-[#1D4ED8] dark:text-[#38BDF8]" />
@@ -185,71 +256,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 );
               })}
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              ระบบจะหยุดดึงข้อมูลชั่วคราวเมื่อพับหน้าจอหรือสลับไปเปิดแอปอื่นเพื่อประหยัดแบตเตอรี่มือถือ
-            </p>
           </div>
-        </div>
 
-        {/* 2. View Layout Mode Switcher */}
-        <div className="p-4 rounded-2xl bg-[#F4F8FF]/70 dark:bg-slate-800/60 border border-blue-100 dark:border-slate-700 space-y-2.5">
-          <label className="font-display font-bold text-[#0F2A6B] dark:text-white block">
-            โหมดการจัดวางหน้าจอ (Mobile / Desktop Layout)
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            {[
-              {
-                mode: ViewLayoutMode.AUTO,
-                label: 'อัตโนมัติตามขนาดหน้าจอ',
-                desc: 'จอมือถือ < 768px ใช้โหมดมือถือ, จอใหญ่ใช้โหมดเดสก์ท็อป',
-                icon: Smartphone,
-              },
-              {
-                mode: ViewLayoutMode.MOBILE,
-                label: 'บังคับโหมดมือถือ (Mobile)',
-                desc: 'แสดงการ์ด 1 คอลัมน์ และแถบเมนูด้านล่าง 4 แท็บ',
-                icon: Smartphone,
-              },
-              {
-                mode: ViewLayoutMode.DESKTOP,
-                label: 'บังคับโหมดเดสก์ท็อป (Desktop)',
-                desc: 'แสดง Sidebar + Grid 12 คอลัมน์ (ความกว้างขั้นต่ำ 1100px เลื่อนดูได้)',
-                icon: Laptop,
-              },
-            ].map((item) => {
-              const Icon = item.icon;
-              const active = draft.viewLayoutMode === item.mode;
-              return (
-                <button
-                  key={item.mode}
-                  type="button"
-                  onClick={() => {
-                    const updated = { ...draft, viewLayoutMode: item.mode };
-                    setDraft(updated);
-                    onUpdateSettings(updated);
-                  }}
-                  className={`p-3 rounded-xl text-left border transition-all flex items-start gap-2.5 ${
-                    active
-                      ? 'bg-[#1D4ED8] text-white border-[#1D4ED8] shadow-xs'
-                      : 'bg-white dark:bg-slate-900 text-[#0F2A6B] dark:text-slate-200 border-blue-100 dark:border-slate-700'
-                  }`}
-                >
-                  <Icon className="w-4 h-4 shrink-0 mt-0.5" />
-                  <div>
-                    <div className="font-display font-bold text-xs">
-                      {item.label}
-                    </div>
-                    <div
-                      className={`text-[11px] mt-0.5 ${
-                        active ? 'text-blue-100' : 'text-slate-500'
-                      }`}
-                    >
-                      {item.desc}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
+          <div className="p-4 rounded-2xl bg-[#F4F8FF]/70 dark:bg-slate-800/60 border border-blue-100 dark:border-slate-700 space-y-2.5">
+            <label className="font-display font-bold text-[#0F2A6B] dark:text-white block">
+              โหมดการจัดวางหน้าจอ (Mobile / Desktop Layout)
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                {
+                  mode: ViewLayoutMode.AUTO,
+                  label: 'อัตโนมัติ',
+                  icon: Smartphone,
+                },
+                {
+                  mode: ViewLayoutMode.MOBILE,
+                  label: 'มือถือ',
+                  icon: Smartphone,
+                },
+                {
+                  mode: ViewLayoutMode.DESKTOP,
+                  label: 'เดสก์ท็อป',
+                  icon: Laptop,
+                },
+              ].map((item) => {
+                const Icon = item.icon;
+                const active = draft.viewLayoutMode === item.mode;
+                return (
+                  <button
+                    key={item.mode}
+                    type="button"
+                    onClick={() => {
+                      const updated = { ...draft, viewLayoutMode: item.mode };
+                      setDraft(updated);
+                      onUpdateSettings(updated);
+                    }}
+                    className={`min-h-[48px] px-2.5 py-2 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+                      active
+                        ? 'bg-[#1D4ED8] text-white border-[#1D4ED8] shadow-xs'
+                        : 'bg-white dark:bg-slate-900 text-[#0F2A6B] dark:text-slate-200 border-blue-100 dark:border-slate-700'
+                    }`}
+                  >
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 

@@ -24,9 +24,18 @@ export enum ViewLayoutMode {
 
 export enum MobileNavTab {
   OVERVIEW = 'OVERVIEW',
+  BILL = 'BILL',
   CHARTS = 'CHARTS',
   TABLE = 'TABLE',
   SETTINGS = 'SETTINGS',
+}
+
+export interface SheetTabInfo {
+  name: string; // e.g. "ฟอกไต 2570", "ฟอกไต 2569", "Bill ฟอกไต 2569"
+  gid?: string; // e.g. "904899055"
+  kind: 'CLAIMS' | 'BILL';
+  fiscalYearBE: number; // e.g. 2570, 2569, 2568, 2567
+  shortLabel: string; // e.g. "ปีงบ 2570" or "Bill 2569"
 }
 
 export interface PeriodRecord {
@@ -136,9 +145,88 @@ export interface ParsedSheetData {
   activeTier: ActiveFetcherTier;
 }
 
+/**
+ * Bill ฟอกไต (CORTBIL / EDC) Record & Parsed Sheet Data
+ */
+export interface BillRecord {
+  id: string;
+  rowNumber: number;
+  seqNo: number | null; // ลำดับ (Col A)
+  dateRaw: string; // ว/ด/ป (Col B, e.g. "01/10/2568")
+  monthKey: string; // e.g. "2568-10" or "ไม่ระบุเดือน"
+  monthLabelThai: string; // e.g. "ต.ค. 68"
+  billCode: string; // งวด (Col C, e.g. "11085_CORTBIL_2641")
+  ofcSent: number | null; // OFC ส่ง (Col D)
+  ofcPassed: number | null; // OFC ผ่าน (Col E)
+  ofcFailed: number | null; // OFC ไม่ผ่าน (Col F)
+  sssSent: number | null; // SSS ส่ง (Col G)
+  sssPassed: number | null; // SSS ผ่าน (Col H)
+  sssFailed: number | null; // SSS ไม่ผ่าน (Col I)
+  sheetTotal: number | null; // รวม (Col J)
+  calculatedSentTotal: number; // (ofcSent || 0) + (sssSent || 0)
+  calculatedPassedTotal: number; // (ofcPassed || 0) + (sssPassed || 0)
+  calculatedFailedTotal: number; // (ofcFailed || 0) + (sssFailed || 0)
+  remark: string; // หมายเหตุ (Col K, e.g. "A0 : approval code ว่าง")
+  isSubmitted: boolean; // True if ofcSent !== null || sssSent !== null || dateRaw !== ''
+  hasFailedItems: boolean; // True if calculatedFailedTotal > 0 || remark !== ''
+}
+
+export interface BillMonthlySummary {
+  monthKey: string;
+  monthLabelThai: string;
+  batchesCount: number;
+  ofcSent: number;
+  ofcPassed: number;
+  ofcFailed: number;
+  sssSent: number;
+  sssPassed: number;
+  sssFailed: number;
+  totalSent: number;
+  totalPassed: number;
+  totalFailed: number;
+}
+
+export interface BillRemarkSummary {
+  code: string; // e.g. "A0", "A4", "A1", "A3", "34", "C"
+  fullText: string;
+  count: number;
+}
+
+export interface ParsedBillSheetData {
+  spreadsheetId: string;
+  sheetName: string; // e.g. "Bill ฟอกไต 2569"
+  fiscalYearLabel: string;
+  isStructureValid: boolean;
+  structureErrorMessage: string | null;
+  records: BillRecord[];
+  submittedRecords: BillRecord[];
+  monthlySummaries: BillMonthlySummary[];
+  remarkSummaries: BillRemarkSummary[];
+  totals: {
+    submittedBatchesCount: number;
+    pendingBatchesCount: number;
+    ofcSent: number;
+    ofcPassed: number;
+    ofcFailed: number;
+    sssSent: number;
+    sssPassed: number;
+    sssFailed: number;
+    totalSent: number;
+    totalPassed: number;
+    totalFailed: number;
+    overallPassRatePct: number;
+    ofcPassRatePct: number;
+    sssPassRatePct: number;
+  };
+  dataHash: string;
+  fetchedAt: string;
+  activeTier: ActiveFetcherTier;
+}
+
 export interface AppSettings {
   spreadsheetId: string;
-  sheetName: string; // "ฟอกไต 2569" | "ฟอกไต 2568"
+  sheetName: string; // Active Claims tab e.g. "ฟอกไต 2569"
+  billSheetName: string; // Active Bill tab e.g. "Bill ฟอกไต 2569"
   pollingIntervalSec: 10 | 15 | 30 | 60;
   fetcherMode: FetcherTierMode;
   publishedCsvUrl2569: string;

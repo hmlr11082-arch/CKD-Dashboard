@@ -1,9 +1,9 @@
 import React from 'react';
 import {
-  Activity,
   Info,
   Laptop,
   Moon,
+  Receipt,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
@@ -12,10 +12,19 @@ import {
   Sun,
 } from 'lucide-react';
 import { getTierBadgeLabel } from '../services/sheetFetcher';
-import { ActiveFetcherTier, ViewLayoutMode } from '../types/claims';
+import {
+  ActiveFetcherTier,
+  MobileNavTab,
+  SheetTabInfo,
+  ViewLayoutMode,
+} from '../types/claims';
 
 interface HeaderProps {
   sheetName: string;
+  billSheetName: string;
+  claimsTabs: SheetTabInfo[];
+  billTabs: SheetTabInfo[];
+  activeTab: MobileNavTab;
   fiscalYearLabel: string;
   activeTier: ActiveFetcherTier;
   isOnline: boolean;
@@ -28,6 +37,8 @@ interface HeaderProps {
   activeFilterCount: number;
   onRefresh: () => void;
   onChangeSheetName: (sheetName: string) => void;
+  onChangeBillSheetName: (billSheetName: string) => void;
+  onSelectTab: (tab: MobileNavTab) => void;
   onCycleViewLayoutMode: () => void;
   onSelectViewLayoutMode: (mode: ViewLayoutMode) => void;
   onToggleDarkMode: () => void;
@@ -38,6 +49,10 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   sheetName,
+  billSheetName,
+  claimsTabs,
+  billTabs,
+  activeTab,
   activeTier,
   isOnline,
   isFetching,
@@ -49,6 +64,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeFilterCount,
   onRefresh,
   onChangeSheetName,
+  onChangeBillSheetName,
+  onSelectTab,
   onCycleViewLayoutMode,
   onToggleDarkMode,
   onOpenQualityModal,
@@ -67,6 +84,8 @@ export const Header: React.FC<HeaderProps> = ({
       : viewLayoutMode === ViewLayoutMode.MOBILE
       ? 'มือถือ'
       : 'เดสก์ท็อป';
+
+  const isBillViewActive = activeTab === MobileNavTab.BILL;
 
   return (
     <header className="sticky top-0 z-30 backdrop-blur-md bg-white/95 dark:bg-[#0D1B35]/95 border-b border-blue-100/80 dark:border-slate-800 transition-colors">
@@ -127,27 +146,74 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Right: Action Controls (all min-h-[44px] for mobile touch targets) */}
+        {/* Right: Dynamic Worksheet Selector + Action Controls */}
         <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-          {/* Quick Fiscal Year Selector */}
-          <div className="hidden lg:flex items-center bg-[#F4F8FF] dark:bg-slate-800/90 p-1 rounded-xl border border-blue-100 dark:border-slate-700">
-            {['ฟอกไต 2569', 'ฟอกไต 2568'].map((tab) => {
-              const active = sheetName === tab;
+          {/* Dynamic Fiscal Year / Sheet Selector (Auto-populated from Google Sheet tabs!) */}
+          <div className="hidden lg:flex items-center bg-[#F4F8FF] dark:bg-slate-800/90 p-1 rounded-xl border border-blue-100 dark:border-slate-700 gap-0.5">
+            {claimsTabs.map((tab) => {
+              const active = !isBillViewActive && sheetName === tab.name;
               return (
                 <button
-                  key={tab}
+                  key={tab.name}
                   type="button"
-                  onClick={() => onChangeSheetName(tab)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
+                  onClick={() => {
+                    onChangeSheetName(tab.name);
+                    if (isBillViewActive) {
+                      onSelectTab(MobileNavTab.OVERVIEW);
+                    }
+                  }}
+                  className={`px-2.5 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap shrink-0 ${
                     active
                       ? 'bg-[#1D4ED8] text-white shadow-xs'
                       : 'text-[#0F2A6B] dark:text-slate-300 hover:bg-blue-50 dark:hover:bg-slate-700'
                   }`}
                 >
-                  ปีงบ {tab.replace('ฟอกไต ', '')}
+                  {tab.shortLabel}
                 </button>
               );
             })}
+
+            {/* Divider & Quick Bill View Button */}
+            {billTabs.length > 0 && (
+              <>
+                <span
+                  className="w-px h-5 bg-blue-200 dark:bg-slate-700 mx-1"
+                  aria-hidden="true"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isBillViewActive) {
+                      // Sync bill fiscal year if a matching Bill tab exists
+                      const yearMatch = sheetName.match(/(\d{4})/);
+                      if (yearMatch) {
+                        const matchedBill = billTabs.find((b) =>
+                          b.name.includes(yearMatch[1])
+                        );
+                        if (matchedBill) {
+                          onChangeBillSheetName(matchedBill.name);
+                        }
+                      }
+                      onSelectTab(MobileNavTab.BILL);
+                    } else {
+                      onSelectTab(MobileNavTab.OVERVIEW);
+                    }
+                  }}
+                  className={`px-2.5 py-1.5 text-xs font-medium rounded-lg flex items-center gap-1 transition-all whitespace-nowrap shrink-0 ${
+                    isBillViewActive
+                      ? 'bg-[#0284C7] text-white shadow-xs'
+                      : 'text-[#0F2A6B] dark:text-slate-300 hover:bg-sky-50 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <Receipt className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {isBillViewActive
+                      ? billSheetName
+                      : `Bill ฟอกไต (${billTabs.length})`}
+                  </span>
+                </button>
+              </>
+            )}
           </div>
 
           {/* Data Quality Audit Trigger */}
@@ -166,7 +232,7 @@ export const Header: React.FC<HeaderProps> = ({
             ) : (
               <ShieldCheck className="w-4 h-4 text-[#22C55E] shrink-0" />
             )}
-            <span className="hidden md:inline">ตรวจสอบข้อมูล</span>
+            <span className="hidden xl:inline">ตรวจสอบข้อมูล</span>
             <span className="font-mono-num font-semibold">
               ({qualityIssuesCount})
             </span>
@@ -177,7 +243,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={onOpenMobileFilterSheet}
-              title="ตัวกรองข้อมูล"
+              title="ตัวกรองข้อมูลและเลือกแผ่นงาน"
               className="min-h-[44px] min-w-[44px] px-2.5 rounded-xl bg-[#E0F2FE]/70 dark:bg-slate-800 text-[#1D4ED8] dark:text-[#38BDF8] hover:bg-[#E0F2FE] flex items-center justify-center gap-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0"
             >
               <SlidersHorizontal className="w-4 h-4 shrink-0" />
@@ -194,7 +260,7 @@ export const Header: React.FC<HeaderProps> = ({
             type="button"
             onClick={onRefresh}
             disabled={isFetching}
-            title="ดึงข้อมูลล่าสุดเดี๋ยวนี้"
+            title="ดึงข้อมูลและตรวจหาแผ่นงานใหม่เดี๋ยวนี้"
             className="min-h-[44px] min-w-[44px] px-2.5 sm:px-3 rounded-xl bg-[#F4F8FF] dark:bg-slate-800 hover:bg-[#E0F2FE] dark:hover:bg-slate-700 text-[#1D4ED8] dark:text-[#38BDF8] border border-blue-100 dark:border-slate-700 flex items-center justify-center gap-1.5 text-xs font-medium transition-colors disabled:opacity-60 whitespace-nowrap shrink-0"
           >
             <RefreshCw

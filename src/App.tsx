@@ -6,14 +6,17 @@ import {
   FileSpreadsheet,
   Info,
   LayoutDashboard,
+  ReceiptText,
   RefreshCw,
   RotateCcw,
   Settings,
   ShieldAlert,
   SlidersHorizontal,
+  Sparkles,
   WifiOff,
 } from 'lucide-react';
 import { AboutSystemModal } from './components/AboutSystemModal';
+import { BillDashboardView } from './components/BillDashboardView';
 import { ChartsSection } from './components/ChartsSection';
 import { ClaimsTable } from './components/ClaimsTable';
 import { DataQualityModal } from './components/DataQualityModal';
@@ -26,8 +29,11 @@ import { KpiCards } from './components/KpiCards';
 import { SettingsView } from './components/SettingsView';
 import {
   DEFAULT_SETTINGS,
+  discoverSpreadsheetTabs,
+  fetchBillSheetWithFallback,
   fetchSheetWithFallback,
   loadAppSettings,
+  loadCachedTabs,
   saveAppSettings,
 } from './services/sheetFetcher';
 import {
@@ -36,7 +42,9 @@ import {
   ClaimScheme,
   FilterState,
   MobileNavTab,
+  ParsedBillSheetData,
   ParsedSheetData,
+  SheetTabInfo,
   ViewLayoutMode,
 } from './types/claims';
 import { FISCAL_MONTHS } from './utils/csvParser';
@@ -57,9 +65,26 @@ export default function App() {
     MobileNavTab.OVERVIEW
   );
 
+  // Dynamically Discovered Worksheet Tabs
+  const [allTabs, setAllTabs] = useState<SheetTabInfo[]>(() =>
+    loadCachedTabs()
+  );
+  const [isDiscoveringTabs, setIsDiscoveringTabs] = useState<boolean>(false);
+
+  const claimsTabs = useMemo(
+    () => allTabs.filter((t) => t.kind === 'CLAIMS'),
+    [allTabs]
+  );
+  const billTabs = useMemo(
+    () => allTabs.filter((t) => t.kind === 'BILL'),
+    [allTabs]
+  );
+
   // Sheet Data & Telemetry State
   const [sheetData, setSheetData] = useState<ParsedSheetData | null>(null);
+  const [billData, setBillData] = useState<ParsedBillSheetData | null>(null);
   const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
+  const [isBillLoading, setIsBillLoading] = useState<boolean>(false);
   const [isFetching, setIsFetching] = useState<boolean>(false);
   const [isOnline, setIsOnline] = useState<boolean>(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -87,8 +112,15 @@ export default function App() {
 
   // Refs for polling & hash comparison
   const prevHashRef = useRef<string | null>(null);
+  const prevBillHashRef = useRef<string | null>(null);
   const prevSheetNameRef = useRef<string>(settings.sheetName);
+  const prevBillSheetNameRef = useRef<string>(settings.billSheetName);
   const retryCountRef = useRef<number>(0);
+  const allTabsRef = useRef<SheetTabInfo[]>(allTabs);
+
+  useEffect(() => {
+    allTabsRef.current = allTabs;
+  }, [allTabs]);
 
   // Sync Dark Mode class on <html>
   useEffect(() => {
@@ -122,14 +154,69 @@ export default function App() {
     return () => clearTimeout(t);
   }, []);
 
-  // Main Data Fetcher
+  // Auto-discover worksheet tabs from Google Sheets
+  const performTabDiscovery = useCallback(
+    async (notifyOnNew = false, customSettings?: AppSettings) => {
+      const currentSettings = customSettings || settings;
+      setIsDiscoveringTabs(true);
+      try {
+        const discovered = await discoverSpreadsheetTabs(
+          currentSettings.spreadsheetId,
+          currentSettings.appsScriptUrl
+        );
+        const prevNames = new Set(allTabsRef.current.map((t) => t.name));
+        const newlyAdded = discovered.filter((t) => !prevNames.has(t.name));
+        setAllTabs(discovered);
+        if (newlyAdded.length > 0 && notifyOnNew) {
+          showToast(
+            `ตรวจพบแผ่นงานใหม่: ${newlyAdded.map((t) => t.name).join(', ')}`
+          );
+        } else if (notifyOnNew) {
+          showToast(`ซิงก์รายชื่อแผ่นงานแล้ว (${discovered.length} แผ่นงาน)`);
+        }
+        return discovered;
+      } finally {
+        setIsDiscoveringTabs(false);
+      }
+    },
+    [settings, showToast]
+  );
+
+  // Main Data Fetcher (fetches both Claims sheet and Bill sheet, plus discovers tabs)
   const performFetch = useCallback(
     async (isManualRefresh = false, customSettings?: AppSettings) => {
       const currentSettings = customSettings || settings;
       setIsFetching(true);
 
       try {
-        const outcome = await fetchSheetWithFallback(currentSettings);
+        // Discover tabs in parallel
+        const tabsPromise = discoverSpreadsheetTabs(
+          currentSettings.spreadsheetId,
+          currentSettings.appsScriptUrl
+        );
+
+        const currentTabs = allTabsRef.current;
+        const matchedClaimsTab = currentTabs.find(
+          (t) => t.name === currentSettings.sheetName
+        );
+        const matchedBillTab = currentTabs.find(
+          (t) => t.name === currentSettings.billSheetName
+        );
+
+        const [outcome, newBillData, discoveredTabs] = await Promise.all([
+          fetchSheetWithFallback(currentSettings, matchedClaimsTab?.gid),
+          fetchBillSheetWithFallback(
+            currentSettings,
+            currentSettings.billSheetName,
+            matchedBillTab?.gid
+          ),
+          tabsPromise,
+        ]);
+
+        if (discoveredTabs && discoveredTabs.length > 0) {
+          setAllTabs(discoveredTabs);
+        }
+
         const newData = outcome.data;
 
         const now = new Date();
@@ -152,22 +239,34 @@ export default function App() {
 
         const isSameSheet =
           prevSheetNameRef.current === currentSettings.sheetName;
-        const hasDataChanged =
+        const isSameBillSheet =
+          prevBillSheetNameRef.current === currentSettings.billSheetName;
+
+        const hasClaimsChanged =
           prevHashRef.current !== null &&
           isSameSheet &&
           prevHashRef.current !== newData.dataHash;
 
+        const hasBillChanged =
+          prevBillHashRef.current !== null &&
+          isSameBillSheet &&
+          prevBillHashRef.current !== newBillData.dataHash;
+
         prevHashRef.current = newData.dataHash;
+        prevBillHashRef.current = newBillData.dataHash;
         prevSheetNameRef.current = currentSettings.sheetName;
+        prevBillSheetNameRef.current = currentSettings.billSheetName;
 
         setSheetData(newData);
+        setBillData(newBillData);
         setIsInitialLoading(false);
+        setIsBillLoading(false);
 
-        if (hasDataChanged) {
+        if (hasClaimsChanged || hasBillChanged) {
           setFlashKey((k) => k + 1);
           showToast('ข้อมูลอัปเดตแล้ว');
         } else if (isManualRefresh) {
-          showToast('ข้อมูลเป็นปัจจุบันแล้ว');
+          showToast('ข้อมูลและรายชื่อแผ่นงานเป็นปัจจุบันแล้ว');
         }
       } catch (err) {
         retryCountRef.current += 1;
@@ -177,6 +276,7 @@ export default function App() {
             : 'ไม่สามารถเชื่อมต่อกับ Google Sheets ได้ในขณะนี้';
         setErrorBanner(msg);
         setIsInitialLoading(false);
+        setIsBillLoading(false);
       } finally {
         setIsFetching(false);
       }
@@ -184,11 +284,12 @@ export default function App() {
     [settings, showToast]
   );
 
-  // Initial fetch and re-fetch when sheetName, spreadsheetId, or fetcherMode changes
+  // Initial fetch and re-fetch when sheetName, billSheetName, spreadsheetId, or fetcherMode changes
   useEffect(() => {
     performFetch(false);
   }, [
     settings.sheetName,
+    settings.billSheetName,
     settings.spreadsheetId,
     settings.fetcherMode,
     settings.publishedCsvUrl2569,
@@ -265,6 +366,15 @@ export default function App() {
 
   const handleChangeSheetName = (nextSheetName: string) => {
     const updated = { ...settings, sheetName: nextSheetName };
+    handleUpdateSettings(updated);
+    if (activeTab === MobileNavTab.BILL || activeTab === MobileNavTab.SETTINGS) {
+      setActiveTab(MobileNavTab.OVERVIEW);
+    }
+  };
+
+  const handleChangeBillSheetName = (nextBillSheetName: string) => {
+    setIsBillLoading(true);
+    const updated = { ...settings, billSheetName: nextBillSheetName };
     handleUpdateSettings(updated);
   };
 
@@ -398,6 +508,13 @@ export default function App() {
       (i) => i.category === 'ANOMALY_DUPLICATE' || i.category === 'ANOMALY_OUTLIER'
     ).length ?? 0;
 
+  const isSheetEmptyTemplate =
+    sheetData !== null &&
+    sheetData.periods.length > 0 &&
+    sheetData.calculatedTotals.grandTotal === 0 &&
+    sheetData.calculatedTotals.cocd === 0 &&
+    sheetData.calculatedTotals.socd === 0;
+
   return (
     <div
       onTouchStart={!effectiveIsDesktop ? handleTouchStartRoot : undefined}
@@ -441,8 +558,20 @@ export default function App() {
       {/* Sticky Header */}
       <Header
         sheetName={settings.sheetName}
-        fiscalYearLabel={sheetData?.fiscalYearLabel || settings.sheetName}
-        activeTier={sheetData?.activeTier ?? ActiveFetcherTier.TIER_1}
+        billSheetName={settings.billSheetName}
+        claimsTabs={claimsTabs}
+        billTabs={billTabs}
+        activeTab={activeTab}
+        fiscalYearLabel={
+          activeTab === MobileNavTab.BILL
+            ? billData?.fiscalYearLabel || settings.billSheetName
+            : sheetData?.fiscalYearLabel || settings.sheetName
+        }
+        activeTier={
+          activeTab === MobileNavTab.BILL
+            ? billData?.activeTier ?? ActiveFetcherTier.TIER_1
+            : sheetData?.activeTier ?? ActiveFetcherTier.TIER_1
+        }
         isOnline={isOnline}
         isFetching={isFetching}
         lastUpdatedTimeStr={lastUpdatedTimeStr}
@@ -453,6 +582,8 @@ export default function App() {
         activeFilterCount={activeFilterCount}
         onRefresh={() => performFetch(true)}
         onChangeSheetName={handleChangeSheetName}
+        onChangeBillSheetName={handleChangeBillSheetName}
+        onSelectTab={setActiveTab}
         onCycleViewLayoutMode={handleCycleViewLayoutMode}
         onSelectViewLayoutMode={(mode) =>
           handleUpdateSettings({ ...settings, viewLayoutMode: mode })
@@ -547,7 +678,9 @@ export default function App() {
           )}
 
           {/* Structure Changed Error State */}
-          {sheetData && !sheetData.qualityReport.isStructureValid ? (
+          {activeTab !== MobileNavTab.BILL &&
+          sheetData &&
+          !sheetData.qualityReport.isStructureValid ? (
             <div className="p-6 sm:p-8 rounded-2xl bg-white dark:bg-[#112240] border-2 border-red-300 dark:border-red-800 text-center max-w-2xl mx-auto my-8 space-y-4">
               <div className="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950 text-[#EF4444] flex items-center justify-center mx-auto">
                 <AlertTriangle className="w-6 h-6" />
@@ -609,11 +742,15 @@ export default function App() {
               {effectiveIsDesktop && (
                 <DesktopSidebar
                   sheetName={settings.sheetName}
+                  billSheetName={settings.billSheetName}
+                  claimsTabs={claimsTabs}
+                  billTabs={billTabs}
                   hasUcColumn={sheetData.hasUcColumn}
                   filters={filters}
                   activeTab={activeTab}
                   qualityIssuesCount={qualityIssuesCount}
                   onChangeSheetName={handleChangeSheetName}
+                  onChangeBillSheetName={handleChangeBillSheetName}
                   onUpdateFilters={setFilters}
                   onResetFilters={handleResetFilters}
                   onSelectTab={setActiveTab}
@@ -624,53 +761,83 @@ export default function App() {
               {/* Main Viewport */}
               <main className="flex-1 min-w-0 space-y-4">
                 {/* Mobile Compact Fiscal Year & Active Filter Bar */}
-                {!effectiveIsDesktop && activeTab !== MobileNavTab.SETTINGS && (
-                  <div className="flex items-center justify-between gap-2 bg-white dark:bg-[#112240] p-2.5 rounded-2xl border border-blue-100/80 dark:border-slate-800 shadow-xs">
-                    <div className="flex items-center gap-1.5">
-                      {['ฟอกไต 2569', 'ฟอกไต 2568'].map((tab) => {
-                        const active = settings.sheetName === tab;
-                        return (
-                          <button
-                            key={tab}
-                            type="button"
-                            onClick={() => handleChangeSheetName(tab)}
-                            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
-                              active
-                                ? 'bg-[#1D4ED8] text-white shadow-xs'
-                                : 'bg-[#F4F8FF] dark:bg-slate-800 text-[#0F2A6B] dark:text-slate-300'
-                            }`}
-                          >
-                            ปีงบ {tab.replace('ฟอกไต ', '')}
-                          </button>
-                        );
-                      })}
-                    </div>
+                {!effectiveIsDesktop &&
+                  activeTab !== MobileNavTab.SETTINGS &&
+                  activeTab !== MobileNavTab.BILL && (
+                    <div className="flex items-center justify-between gap-2 bg-white dark:bg-[#112240] p-2.5 rounded-2xl border border-blue-100/80 dark:border-slate-800 shadow-xs">
+                      <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
+                        {claimsTabs.map((tab) => {
+                          const active = settings.sheetName === tab.name;
+                          return (
+                            <button
+                              key={tab.name}
+                              type="button"
+                              onClick={() => handleChangeSheetName(tab.name)}
+                              className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
+                                active
+                                  ? 'bg-[#1D4ED8] text-white shadow-xs'
+                                  : 'bg-[#F4F8FF] dark:bg-slate-800 text-[#0F2A6B] dark:text-slate-300'
+                              }`}
+                            >
+                              ปีงบ {tab.fiscalYearBE}
+                            </button>
+                          );
+                        })}
+                      </div>
 
-                    <div className="flex items-center gap-1.5">
-                      {activeFilterCount > 0 && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {activeFilterCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleResetFilters}
+                            className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-xs font-medium flex items-center gap-1"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>ล้าง ({activeFilterCount})</span>
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={handleResetFilters}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 text-xs font-medium flex items-center gap-1"
+                          onClick={() => setIsMobileFilterOpen(true)}
+                          className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#E0F2FE] dark:bg-slate-800 text-[#1D4ED8] dark:text-[#38BDF8] text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
                         >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>ล้าง ({activeFilterCount})</span>
+                          <SlidersHorizontal className="w-3.5 h-3.5" />
+                          <span>ตัวกรอง</span>
                         </button>
-                      )}
+                      </div>
+                    </div>
+                  )}
+
+                {/* Banner when viewing a newly created fiscal year sheet with 0 recorded amounts (e.g., ฟอกไต 2570) */}
+                {activeTab !== MobileNavTab.SETTINGS &&
+                  activeTab !== MobileNavTab.BILL &&
+                  isSheetEmptyTemplate && (
+                    <div className="p-4 rounded-2xl bg-sky-50/90 dark:bg-sky-950/40 border border-sky-200 dark:border-sky-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                      <div className="flex items-start gap-2.5">
+                        <Sparkles className="w-4 h-4 text-[#0284C7] dark:text-[#38BDF8] shrink-0 mt-0.5" />
+                        <div className="text-[#0F2A6B] dark:text-sky-100 space-y-0.5">
+                          <div className="font-display font-bold">
+                            เชื่อมต่อแผ่นงานใหม่ &ldquo;{settings.sheetName}&rdquo; เรียบร้อยแล้ว ({sheetData.periods.length} งวด)
+                          </div>
+                          <p className="text-slate-600 dark:text-slate-300">
+                            โครงสร้างตารางพร้อมใช้งาน (COCD20261001 – SOCD20270902) ขณะนี้ยังไม่มีการกรอกยอดเงินในแผ่นงานนี้ เมื่อกรอกตัวเลขใน Google Sheet ระบบจะอัปเดตกราฟและยอดรวมอัตโนมัติ
+                          </p>
+                        </div>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => setIsMobileFilterOpen(true)}
-                        className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#E0F2FE] dark:bg-slate-800 text-[#1D4ED8] dark:text-[#38BDF8] text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap"
+                        onClick={() => handleChangeSheetName('ฟอกไต 2569')}
+                        className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#1D4ED8] text-white font-semibold whitespace-nowrap self-start sm:self-center shrink-0 hover:bg-[#1E40AF]"
                       >
-                        <SlidersHorizontal className="w-3.5 h-3.5" />
-                        <span>ตัวกรอง</span>
+                        ดูข้อมูลปีงบ 2569
                       </button>
                     </div>
-                  </div>
-                )}
+                  )}
 
                 {/* Data Quality & Anomaly Alert Strip (Highlights Period 20260201 & Incomplete UC Months) */}
                 {activeTab !== MobileNavTab.SETTINGS &&
+                  activeTab !== MobileNavTab.BILL &&
+                  !isSheetEmptyTemplate &&
                   (duplicateAnomalyCount > 0 ||
                     sheetData.qualityReport.incompleteMonths.length > 0) && (
                     <div className="p-3.5 rounded-2xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200/90 dark:border-amber-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
@@ -716,9 +883,24 @@ export default function App() {
                 {activeTab === MobileNavTab.SETTINGS ? (
                   <SettingsView
                     settings={settings}
+                    claimsTabs={claimsTabs}
+                    billTabs={billTabs}
+                    isDiscoveringTabs={isDiscoveringTabs}
                     onUpdateSettings={handleUpdateSettings}
                     onResetSettings={handleResetSettings}
+                    onRediscoverTabs={() => performTabDiscovery(true)}
                     onOpenAboutModal={() => setIsAboutModalOpen(true)}
+                  />
+                ) : activeTab === MobileNavTab.BILL ? (
+                  <BillDashboardView
+                    billData={billData}
+                    billTabs={billTabs}
+                    activeBillSheetName={settings.billSheetName}
+                    isLoading={isBillLoading}
+                    effectiveIsDesktop={effectiveIsDesktop}
+                    darkMode={settings.darkMode}
+                    flashKey={flashKey}
+                    onSelectBillSheet={handleChangeBillSheetName}
                   />
                 ) : activeTab === MobileNavTab.CHARTS ? (
                   <ChartsSection
@@ -790,18 +972,23 @@ export default function App() {
         </div>
       </div>
 
-      {/* Mobile Bottom Navigation Bar (4 Tabs: ภาพรวม | กราฟ | ตาราง | ตั้งค่า) */}
+      {/* Mobile Bottom Navigation Bar (5 Tabs: ภาพรวม | Bill ฟอกไต | กราฟ | ตาราง | ตั้งค่า) */}
       {!effectiveIsDesktop && (
         <nav
           aria-label="แถบเมนูหลักด้านล่าง"
           className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#0D1B35]/95 backdrop-blur-md border-t border-blue-100 dark:border-slate-800 pb-safe"
         >
-          <div className="grid grid-cols-4 h-16 max-w-lg mx-auto">
+          <div className="grid grid-cols-5 h-16 max-w-lg mx-auto">
             {[
               {
                 id: MobileNavTab.OVERVIEW,
                 label: 'ภาพรวม',
                 icon: LayoutDashboard,
+              },
+              {
+                id: MobileNavTab.BILL,
+                label: 'Bill ฟอกไต',
+                icon: ReceiptText,
               },
               {
                 id: MobileNavTab.CHARTS,
@@ -864,9 +1051,19 @@ export default function App() {
         isOpen={isMobileFilterOpen}
         onClose={() => setIsMobileFilterOpen(false)}
         sheetName={settings.sheetName}
+        billSheetName={settings.billSheetName}
+        claimsTabs={claimsTabs}
+        billTabs={billTabs}
+        activeTab={activeTab}
         hasUcColumn={sheetData?.hasUcColumn ?? true}
         filters={filters}
         onChangeSheetName={handleChangeSheetName}
+        onChangeBillSheetName={(billName) => {
+          handleChangeBillSheetName(billName);
+          setActiveTab(MobileNavTab.BILL);
+          setIsMobileFilterOpen(false);
+        }}
+        onSelectTab={setActiveTab}
         onUpdateFilters={setFilters}
         onResetFilters={handleResetFilters}
       />
